@@ -2,12 +2,18 @@ import tensorflow as tf
 import os
 
 VGG_MEAN = 103.939, 116.779, 123.68 # Blue, Green, Red
-H, W = 512, 512
+
 
 class FCNVGGDataset(object):
   def __init__(self, hparams, mode):
     self._mode = mode
-    self._initializer, self._labels, self._images = self._get_iterator(hparams)
+
+    if mode != tf.contrib.learn.ModeKeys.INFER: 
+      (self._initializer, self._labels, self._images
+          ) = self._get_iterator(hparams)
+    else:
+      (self._initializer, self._labels, self._images
+          ) = self._get_infer_iterator(hparams)
 
   @property
   def mode(self):
@@ -24,14 +30,41 @@ class FCNVGGDataset(object):
   def init_iterator(self, sess):
     sess.run(self._initializer)
 
+  def _get_infer_iterator(self, hparams):
+    file_dir = hparams.infer_dir
+
+    img_filenames = sorted(tf.gfile.Glob(
+        os.path.join(file_dir, "images", "*jpg")))
+  
+    dataset = tf.data.Dataset.from_tensor_slices(img_filenames)
+
+    dataset = dataset.map(lambda fn_img: tf.read_file(fn_img))
+
+    dataset = dataset.map(lambda str_img: tf.image.decode_jpeg(str_img))
+
+    dataset = dataset.map(lambda img: tf.cast(img, tf.float32))
+
+    dataset = dataset.map(lambda img: tf.expand_dims(img, axis=0))
+
+    dataset = dataset.map(lambda img: _subtract_channel_mean(img))
+
+    iterator = dataset.make_one_shot_iterator()
+
+    images = iterator.get_next()
+
+    return None, None, images
+
   def _get_iterator(self,
-        hparams,
-        reshuffle_each_iteration=True):
-    if self.mode == "train":
+                    hparams,
+                    reshuffle_each_iteration=True):
+    if self.mode == tf.contrib.learn.ModeKeys.TRAIN:
       file_dir = hparams.train_dir
-    elif self.mode == "eval":
+    else:
       file_dir = hparams.eval_dir
-    random_seed = None # hparams.random_seed
+
+    random_seed = hparams.random_seed
+    max_height = hparams.max_height
+    max_width = hparams.max_width
 
     ann_filenames = sorted(tf.gfile.Glob(
         os.path.join(file_dir, "annotations", "*png")))
@@ -68,11 +101,13 @@ class FCNVGGDataset(object):
         tf.logical_and(tf.equal(tf.shape(ann)[2], 1),
             tf.equal(tf.shape(img)[2], 3)))
 
-    dataset = dataset.map(lambda ann, img: tf.concat([ann, img], axis=2))
-
-    dataset = dataset.map(lambda stacked: _crop_to_size(stacked, H, W))
-
-    dataset = dataset.map(lambda stacked: tuple(tf.split(stacked, [1, 3], 2)))
+    if self.mode == tf.contrib.learn.ModeKeys.TRAIN:
+      dataset = dataset.map(
+          lambda ann, img: tf.concat([ann, img], axis=2))
+      dataset = dataset.map(
+          lambda stacked: _crop_to_size(stacked, max_height, max_width))
+      dataset = dataset.map(
+          lambda stacked: tuple(tf.split(stacked, [1, 3], 2)))
 
     dataset = dataset.map(lambda ann, img:
         (tf.cast(ann, tf.int32), tf.cast(img, tf.float32)))
