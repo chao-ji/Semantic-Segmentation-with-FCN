@@ -2,8 +2,8 @@ import tensorflow as tf
 import numpy as np
 
 
-def conv_relu_layer(ftmps, vgg16_weights, hparams, name):
-  kernel_val, bias_val = vgg16_weights[name]
+def conv_relu_layer(ftmps, hparams, weights, name, init_weights):
+  kernel_val, bias_val = init_weights[name]
   kernel_initializer = tf.constant_initializer(kernel_val)
   bias_initializer = tf.constant_initializer(bias_val)
 
@@ -15,21 +15,22 @@ def conv_relu_layer(ftmps, vgg16_weights, hparams, name):
     bias = tf.get_variable("bias",
                            shape=bias_val.shape,
                            initializer=bias_initializer)
+    weights[name] = kernel, bias
+
     conv = tf.nn.conv2d(ftmps, kernel, (1, 1, 1, 1), "SAME", name="conv")
     relu = tf.nn.relu(conv + bias, name="relu")
 
   return relu
 
 
-def fc2conv_layer(ftmps, vgg16_weights, hparams, vgg_layer_name,
-    vgg_layer_shape, use_dropout):
-
-  kernel_val, bias_val = vgg16_weights[vgg_layer_name]
-  kernel_val = kernel_val.reshape(vgg_layer_shape)
+def fc2conv_layer(
+      ftmps, hparams, weights, use_dropout, name, new_shape, init_weights):
+  kernel_val, bias_val = init_weights[name]
+  kernel_val = kernel_val.reshape(new_shape)
   kernel_initializer = tf.constant_initializer(kernel_val)
   bias_initializer = tf.constant_initializer(bias_val)
 
-  with tf.variable_scope(vgg_layer_name):
+  with tf.variable_scope(name):
     kernel = tf.get_variable("kernel",
                              shape=kernel_val.shape,
                              initializer=kernel_initializer,
@@ -37,6 +38,7 @@ def fc2conv_layer(ftmps, vgg16_weights, hparams, vgg_layer_name,
     bias = tf.get_variable("bias",
                            shape=bias_val.shape,
                            initializer=bias_initializer)
+    weights[name] = kernel, bias
 
     conv = tf.nn.conv2d(ftmps, kernel, (1, 1, 1, 1), "SAME", name="conv")
     relu = tf.nn.relu(conv + bias, name="relu")
@@ -47,17 +49,16 @@ def fc2conv_layer(ftmps, vgg16_weights, hparams, vgg_layer_name,
       return relu
 
 
-def project_layer(ftmps, out_depth, hparams, name, zero_initializer=True):
-
+def project_layer(ftmps, hparams, weights, out_depth, name, init_weights=None):
   in_depth = ftmps.get_shape().as_list()[3]
 
-  if zero_initializer:
-    kernel_initializer = tf.zeros_initializer()
+  if init_weights:
+    kernel_val, bias_val = init_weights[name]
+    kernel_initializer = tf.constant_initializer(kernel_val)
+    bias_initializer = tf.constant_initializer(bias_val)
   else:
-    stddev = (2. / in_depth) ** 0.5
-    kernel_initializer = tf.truncated_normal_initializer(stddev=stddev)
-
-  bias_initializer = tf.zeros_initializer()
+    kernel_initializer = tf.zeros_initializer()
+    bias_initializer = tf.zeros_initializer()
 
   with tf.variable_scope(name):
     kernel = tf.get_variable("kernel",
@@ -67,31 +68,38 @@ def project_layer(ftmps, out_depth, hparams, name, zero_initializer=True):
     bias = tf.get_variable("bias",
                            shape=(out_depth,),
                            initializer=bias_initializer)
+    weights[name] = kernel, bias
 
     conv = tf.nn.conv2d(ftmps, kernel, (1, 1, 1, 1), "SAME", name="conv")
     return conv + bias
 
 
-def upsample_layer(ftmps, upsample_factor, output_shape, name):
+def upsample_layer(
+    ftmps, weights, upsample_factor, output_shape, name, init_weights=None):
 
-  depth = ftmps.get_shape().as_list()[3]
-  kernel_val = _get_bilinear_weights(upsample_factor, depth)
+  if init_weights:
+    kernel_val = init_weights[name][0]
+    kernel_initializer = tf.constant_initializer(kernel_val)
+  else:
+    depth = ftmps.get_shape().as_list()[3]
+    kernel_val = _get_bilinear_weights(upsample_factor, depth)
+    kernel_initializer = tf.constant_initializer(kernel_val)
 
-  kernel_initializer = tf.constant_initializer(kernel_val)
   strides = 1, upsample_factor, upsample_factor, 1
 
   with tf.variable_scope(name):
     kernel = tf.get_variable("kernel",
                              shape=kernel_val.shape,
                              initializer=kernel_initializer)
+    weights[name] = (kernel,)
 
-    conv_trans = tf.nn.conv2d_transpose(ftmps,
-                                        filter=kernel,
-                                        output_shape=output_shape,
-                                        strides=strides,
-                                        padding="SAME",
-                                        name=name)
-  return conv_trans
+    conv_transposed = tf.nn.conv2d_transpose(ftmps,
+                                             filter=kernel,
+                                             output_shape=output_shape,
+                                             strides=strides,
+                                             padding="SAME",
+                                             name=name)
+  return conv_transposed
 
 
 def _get_bilinear_weights(upsample_factor, num_classes):
