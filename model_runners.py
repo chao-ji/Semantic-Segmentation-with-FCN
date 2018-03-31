@@ -57,26 +57,73 @@ class FCNVGGModelTrainer(_BaseModelRunner):
     super(FCNVGGModelTrainer, self).__init__(
         builder=builder, hparams=hparams)
 
+    with self.graph.as_default():
+      self.pixel_acc = _pixel_acc(
+          self.dataset.labels, self.model.predictions)
+      self.mean_iou = _mean_iou(
+          self.dataset.labels, self.model.predictions, hparams.num_classes)
+
   def _get_learning_rate(self, hparams):
    return tf.constant(hparams.learning_rate)
 
   def _get_update_op(self, hparams):
-    opt = tf.train.MomentumOptimizer(self.learning_rate, hparams.momentum)
-    update_op = opt.minimize(self.model.loss, global_step=self._global_step) 
+    if hparams.optimizer == "momentum":
+      opt = tf.train.MomentumOptimizer(self.learning_rate, hparams.momentum)
+    elif hparams.optimizer == "adam":
+      opt = tf.train.AdamOptimizer(self.learning_rate)
+    else:
+      raise ValueError("Unknown optimizer: %s" % hparams.optimizer)
+    update_op = opt.minimize(self.model.loss, global_step=self._global_step)
     return update_op
 
   def train(self, sess):
     return sess.run([self.update_op,
                      self.model.loss,
-                     self.model.segmap,
                      self.dataset.labels,
+                     self.model.predictions,
+                     self.pixel_acc,
+                     self.mean_iou,
                      self._global_step])
 
-"""
-class FCNVGGModelEvaluator(_BaseModeRunner):
+  def eval_weights(self, sess):
+    return sess.run(self.model.weights)
+
+
+class FCNVGGModelEvaluator(_BaseModelRunner):
   mode = tf.contrib.learn.ModeKeys.EVAL
   def __init__(self, builder, hparams):
     super(FCNVGGModelEvaluator, self).__init__(
         builder=builder, hparams=hparams)
-"""
-  
+
+    with self.graph.as_default():
+      self.pixel_acc = _pixel_acc(
+          self.dataset.labels, self.model.predictions)
+      self.mean_iou = _mean_iou(
+          self.dataset.labels, self.model.predictions, hparams.num_classes)
+
+  def eval(self, sess):
+    return sess.run([self.model.loss,
+                     self.dataset.labels,
+                     self.model.predictions,
+                     self.pixel_acc,
+                     self.mean_iou])
+
+def _pixel_acc(labels, predictions):
+  return tf.reduce_mean(tf.cast(tf.equal(labels, predictions), tf.float32))
+
+def _mean_iou(labels, predictions, num_classes):
+  labels = tf.reshape(labels, [-1])
+  predictions = tf.reshape(predictions, [-1])
+  cm = tf.confusion_matrix(labels, predictions, num_classes)
+  axis0_sum = tf.reduce_sum(cm, axis=0) # row
+  axis1_sum = tf.reduce_sum(cm, axis=1) # col
+
+  intersection = tf.diag_part(cm)
+  union = axis0_sum + axis1_sum - intersection
+
+  num_valid_classes = tf.reduce_sum(tf.cast(tf.not_equal(union, 0), tf.float32))
+  union = tf.where(tf.greater(union, 0), union, tf.ones_like(union))
+  iou = tf.div(tf.cast(intersection, tf.float32), tf.cast(union, tf.float32))
+
+  return tf.where(tf.greater(num_valid_classes, 0),
+      tf.div(tf.reduce_sum(iou), num_valid_classes), 0) 
