@@ -49,10 +49,10 @@ def fc2conv_layer(
       return relu
 
 
-def project_layer(ftmps, hparams, weights, out_depth, name, init_weights=None):
+def project_layer(ftmps, hparams, weights, out_depth, name, init_weights):
   in_depth = ftmps.get_shape().as_list()[3]
 
-  if init_weights:
+  if name in init_weights:
     kernel_val, bias_val = init_weights[name]
     kernel_initializer = tf.constant_initializer(kernel_val)
     bias_initializer = tf.constant_initializer(bias_val)
@@ -74,10 +74,10 @@ def project_layer(ftmps, hparams, weights, out_depth, name, init_weights=None):
     return conv + bias
 
 
-def upsample_layer(
-    ftmps, weights, upsample_factor, output_shape, name, init_weights=None):
+def upsample_layer(ftmps,
+    hparams, weights, upsample_factor, output_shape, name, init_weights):
 
-  if init_weights:
+  if name in init_weights:
     kernel_val = init_weights[name][0]
     kernel_initializer = tf.constant_initializer(kernel_val)
   else:
@@ -90,7 +90,8 @@ def upsample_layer(
   with tf.variable_scope(name):
     kernel = tf.get_variable("kernel",
                              shape=kernel_val.shape,
-                             initializer=kernel_initializer)
+                             initializer=kernel_initializer,
+                             trainable=hparams.train_upsample_weights)
     weights[name] = (kernel,)
 
     conv_transposed = tf.nn.conv2d_transpose(ftmps,
