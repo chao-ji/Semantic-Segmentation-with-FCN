@@ -13,9 +13,8 @@ class _BaseModelRunner(object):
       self._model = builder(hparams, self.dataset, type(self).mode)
 
       if self.mode != tf.contrib.learn.ModeKeys.INFER:
-        self._loss = _compute_loss(self.dataset.labels,
+        self._loss, self._pred_loss, self._reg_loss = _compute_loss(self.dataset.labels,
                                    self.dataset.mask,
-                                   self.dataset.num_valid_pixels,
                                    self.model.logits)
       else:
         self._loss = None
@@ -26,15 +25,8 @@ class _BaseModelRunner(object):
         self._update_op = self._get_update_op(hparams)
 
       self._global_variables_initializer = tf.global_variables_initializer()
-      self._saver = tf.train.Saver(tf.global_variables())
+      self._saver = tf.train.Saver(tf.global_variables(), max_to_keep=None)
 
-#    print("SSSSS")
-#    print("labels, " + str(self.dataset.labels.shape) + str(self.dataset.labels.dtype))
-#    print("mask, " + str(self.dataset.mask.shape) + str(self.dataset.mask.dtype))
-#    print("images, " + str(self.dataset.images.shape) + str(self.dataset.images.dtype))
-#    print("logits, " + str(self.model.logits.shape) + str(self.model.logits.dtype))
-#    print("predictions, " + str(self.model.predictions.shape) + str(self.model.predictions.dtype))
-#    print("EEEEE")
 
   @property
   def graph(self):
@@ -84,6 +76,12 @@ class FCNVGGModelTrainer(_BaseModelRunner):
                                 self.dataset.mask,
                                 self.model.predictions,
                                 hparams.num_classes)
+      self.train_summary = tf.summary.merge([
+          tf.summary.scalar("total loss", tf.reduce_mean(self.loss)),
+          tf.summary.scalar("pred loss", tf.reduce_mean(self._pred_loss)),
+          tf.summary.scalar("reg loss", tf.reduce_mean(self._reg_loss)),
+          tf.summary.scalar("pixel acc", self.pixel_acc),
+          tf.summary.scalar("meanIU", self.mean_iou)])
 
   def _get_learning_rate(self, hparams):
    return tf.constant(hparams.learning_rate)
@@ -95,17 +93,34 @@ class FCNVGGModelTrainer(_BaseModelRunner):
       opt = tf.train.AdamOptimizer(self._learning_rate)
     else:
       raise ValueError("Unknown optimizer: %s" % hparams.optimizer)
-    update_op = opt.minimize(self.loss, global_step=self._global_step)
+
+    if hparams.bias_lr_multiplier is not None:
+      mult = hparams.bias_lr_multiplier
+      vs = tf.trainable_variables()
+      non_biases = [v for v in vs if "bias" not in v.name]
+      biases = [v for v in vs if "bias" in v.name]
+  
+      gvs_non_biases = opt.compute_gradients(self._loss, non_biases)
+      gvs_biases = [(g * mult, v)
+          for g, v in opt.compute_gradients(self._loss, biases)]
+      grads_and_vars = gvs_non_biases + gvs_biases
+      update_op = opt.apply_gradients(grads_and_vars, self._global_step)
+    else:
+      print("same lr")
+      update_op = opt.minimize(self._loss, global_step=self._global_step)
+
     return update_op
 
   def train(self, sess):
     return sess.run([self._update_op,
                      self.loss,
-                     self.dataset.labels,
-                     self.model.predictions,
                      self.pixel_acc,
                      self.mean_iou,
-                     self._global_step])
+                     self._global_step,
+                     self.train_summary,
+                     self._pred_loss,
+                     self._reg_loss,
+                     self.dataset.num_valid_pixels])
 
   def eval_weights(self, sess):
     return sess.run(self.model.weights)
@@ -129,10 +144,11 @@ class FCNVGGModelEvaluator(_BaseModelRunner):
 
   def eval(self, sess):
     return sess.run([self.loss,
-                     self.dataset.labels,
-                     self.model.predictions,
                      self.pixel_acc,
-                     self.mean_iou])
+                     self.mean_iou,
+                     self._pred_loss,
+                     self._reg_loss,
+                     self.dataset.num_valid_pixels])
 
 
 class FCNVGGModelInferencer(_BaseModelRunner):
@@ -145,12 +161,17 @@ class FCNVGGModelInferencer(_BaseModelRunner):
     return sess.run(self.model.predictions)
 
 
-def _compute_loss(labels, mask, num_valid_pixels, logits):
+def _compute_loss(labels, mask, logits):
   per_pixel_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
       labels=labels, logits=logits)
-#  loss = tf.div(tf.reduce_sum(per_pixel_loss * mask), num_valid_pixels)
-  loss = per_pixel_loss * mask
-  return loss
+
+  pred_loss = per_pixel_loss * mask
+
+  reg_loss = tf.add_n(
+      tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
+
+  total_loss = pred_loss + reg_loss
+  return total_loss, pred_loss, reg_loss
 
 
 def _pixel_acc(labels, mask, num_valid_pixels, predictions):
