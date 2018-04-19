@@ -106,10 +106,8 @@ class PascalDataset(object):
         tf.data.Dataset.from_tensor_slices(img_filenames)))
 
     if self.mode == TRAIN:    
-      dataset = dataset.shuffle(
-        DATA_SIZE, random_seed, reshuffle_each_iteration)
-
-      dataset = dataset.repeat(12).take(iterations)
+      dataset = dataset.repeat().take(iterations).shuffle(
+        DATA_SIZE*10, random_seed, reshuffle_each_iteration)
 
     dataset = dataset.map(lambda fn_lbl, fn_img:
         (tf.read_file(fn_lbl), tf.read_file(fn_img)))
