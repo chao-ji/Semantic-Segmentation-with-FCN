@@ -97,10 +97,10 @@ class FCNVGGModel(object):
 
     if self.upsample_factor == 32:
       logits = _fcn32s_logits(out,
-          hparams, weights, layers, num_classes, logits_shape)
+          hparams, weights, layers, num_classes, logits_shape, init_weights)
     elif self.upsample_factor == 16:
       logits = _fcn16s_logits(out,
-          hparams, weights, layers, num_classes, logits_shape)
+          hparams, weights, layers, num_classes, logits_shape, init_weights)
     elif self.upsample_factor == 8:
       logits = _fcn8s_logits(out,
           hparams, weights, layers, num_classes, logits_shape, init_weights)
